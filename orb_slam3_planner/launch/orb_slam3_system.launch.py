@@ -8,14 +8,20 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='orb_slam3_planner',
-            executable='filtered_landmark_publisher',
-            name='filtered_landmark_publisher',
+            executable='landmark_publisher_node',
+            name='landmark_publisher_node',
             output='screen'
         ),
+        # Node(
+        #     package='orb_slam3_planner',
+        #     executable='map_builder_node',
+        #     name='map_builder_node',
+        #     output='screen'
+        # ),
         Node(
             package='orb_slam3_planner',
-            executable='planner_node',
-            name='orb_slam3_planner',
+            executable='enhanced_map_builder_node',
+            name='enhanced_map_builder_node',
             output='screen'
         ),
     ])

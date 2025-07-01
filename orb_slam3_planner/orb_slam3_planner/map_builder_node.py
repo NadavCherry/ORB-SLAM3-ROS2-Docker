@@ -11,9 +11,9 @@ import threading
 import cv2
 
 
-class PlannerNode(Node):
+class MapBuilderNode(Node):
     def __init__(self):
-        super().__init__('planner_node')
+        super().__init__('map_builder_node')
 
         # Grid parameters
         self.resolution = 0.1
@@ -24,7 +24,7 @@ class PlannerNode(Node):
         self.rebuild_interval = 1  # Rebuild grid every 20 frames
 
         # Filter parameters
-        self.z_min = 0.4  # Ignore floor points
+        self.z_min = 0.3  # Ignore floor points
         self.max_range = 40.0
         self.current_pose = None
         self.pose_lock = threading.Lock()
@@ -136,34 +136,36 @@ class PlannerNode(Node):
         kernel = np.ones((4, 4), np.uint8)
         vis_large = cv2.dilate(vis_large, kernel, iterations=2)
 
-        # Add grid lines for reference (every meter)
-        self.add_grid_lines(vis_large, scale_factor, vis_cropped.shape)
+        success1 = cv2.imwrite('/tmp/occupancy_grid_19_no_lines.png', vis_large)
 
-        success = cv2.imwrite('/tmp/occupancy_grid_18.png', vis_large)
-        if success:
+        # # Add grid lines for reference (every meter)
+        # self.add_grid_lines(vis_large, scale_factor, vis_cropped.shape)
+
+        success2 = cv2.imwrite('/tmp/occupancy_grid_19.png', vis_large)
+        if success1 and success2:
             self.get_logger().info("Saved occupancy grid to /tmp/occupancy_grid_18.png")
         else:
             self.get_logger().error("Failed to save image!")
 
-    def add_grid_lines(self, img, scale_factor, original_shape):
-        """Add subtle grid lines every meter for reference"""
-        height, width = img.shape
-        # Grid spacing in original resolution (10 cells = 1 meter at 0.1m resolution)
-        original_grid_spacing = 10
-        grid_spacing = int(original_grid_spacing * scale_factor)
-
-        # Draw vertical lines
-        for x in range(0, width, grid_spacing):
-            cv2.line(img, (x, 0), (x, height - 1), 150, 1)
-
-        # Draw horizontal lines
-        for y in range(0, height, grid_spacing):
-            cv2.line(img, (0, y), (width - 1, y), 150, 1)
+    # def add_grid_lines(self, img, scale_factor, original_shape):
+    #     """Add subtle grid lines every meter for reference"""
+    #     height, width = img.shape
+    #     # Grid spacing in original resolution (10 cells = 1 meter at 0.1m resolution)
+    #     original_grid_spacing = 10
+    #     grid_spacing = int(original_grid_spacing * scale_factor)
+    #
+    #     # Draw vertical lines
+    #     for x in range(0, width, grid_spacing):
+    #         cv2.line(img, (x, 0), (x, height - 1), 150, 1)
+    #
+    #     # Draw horizontal lines
+    #     for y in range(0, height, grid_spacing):
+    #         cv2.line(img, (0, y), (width - 1, y), 150, 1)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PlannerNode()
+    node = MapBuilderNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
