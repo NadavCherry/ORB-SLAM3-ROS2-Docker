@@ -17,15 +17,15 @@ class MapBuilderNode(Node):
 
         # Grid parameters
         self.resolution = 0.1
-        self.map_size = 40.0
+        self.map_size = 50.0
         self.grid_size = int(self.map_size / self.resolution)
         self.grid = np.full((self.grid_size, self.grid_size), -1, dtype=np.int8)
         self.frame_count = 0
         self.rebuild_interval = 1  # Rebuild grid every 20 frames
 
         # Filter parameters
-        self.z_min = 0.3  # Ignore floor points
-        self.max_range = 40.0
+        self.z_min = 0  # Ignore floor points
+        self.max_range = 50.0
         self.current_pose = None
         self.pose_lock = threading.Lock()
 
@@ -78,6 +78,8 @@ class MapBuilderNode(Node):
 
         self.publish_grid()
         self.save_grid_image()
+        if self.frame_count % 20 == 0:
+            self.save_grid_to_csv()
 
     def publish_grid(self):
         msg = OccupancyGrid()
@@ -91,76 +93,32 @@ class MapBuilderNode(Node):
         msg.data = self.grid.flatten().tolist()
         self.map_pub.publish(msg)
 
+    def save_grid_to_csv(self, filename='/tmp/occupancy_grid.csv'):
+        """
+        Save the occupancy grid to a CSV file.
+
+        Args:
+            filename (str): Full path to the CSV file to save.
+        """
+        try:
+            np.savetxt(filename, self.grid, fmt='%d', delimiter=',')
+            self.get_logger().info(f"Saved occupancy grid to {filename}")
+        except Exception as e:
+            self.get_logger().error(f"Failed to save occupancy grid to CSV: {e}")
+
+
     def save_grid_image(self):
         """Save occupancy grid as PNG image with better quality and auto-cropping"""
-        # Create visualization array
         vis = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
-        vis[self.grid == 100] = 0  # Black = occupied
-        vis[self.grid == -1] = 200  # Light gray = unknown (better contrast)
-        vis = cv2.flip(vis, 0)  # Flip for proper orientation
+        vis[self.grid == 100] = 255  # white = occupied
+        vis[self.grid == -1] = 0  # black
 
-        # Find the bounding box of occupied areas
-        occupied_mask = (vis == 0)
-        if np.any(occupied_mask):
-            # Find all occupied pixels
-            occupied_coords = np.where(occupied_mask)
-            y_coords, x_coords = occupied_coords
-
-            # Get tight bounding box
-            y_min, y_max = y_coords.min(), y_coords.max()
-            x_min, x_max = x_coords.min(), x_coords.max()
-
-            # Add smaller padding (since your map is dense)
-            padding = 20
-            y_min = max(0, y_min - padding)
-            y_max = min(self.grid_size, y_max + padding)
-            x_min = max(0, x_min - padding)
-            x_max = min(self.grid_size, x_max + padding)
-
-            # Crop to the tight area
-            vis_cropped = vis[y_min:y_max, x_min:x_max]
-
-            # Log the crop info for debugging
-            print(f"Cropped from {self.grid_size}x{self.grid_size} to {vis_cropped.shape[0]}x{vis_cropped.shape[1]}")
-        else:
-            # If no occupied cells, use center area
-            center = self.grid_size // 2
-            margin = 50
-            vis_cropped = vis[center - margin:center + margin, center - margin:center + margin]
-
-        # Scale up the cropped image significantly
-        scale_factor = 12  # Even bigger scaling since we're cropping tighter
-        vis_large = cv2.resize(vis_cropped, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_NEAREST)
-
-        # Make occupied points bigger and more visible
-        kernel = np.ones((4, 4), np.uint8)
-        vis_large = cv2.dilate(vis_large, kernel, iterations=2)
-
-        success1 = cv2.imwrite('/tmp/occupancy_grid_19_no_lines.png', vis_large)
-
-        # # Add grid lines for reference (every meter)
-        # self.add_grid_lines(vis_large, scale_factor, vis_cropped.shape)
-
-        success2 = cv2.imwrite('/tmp/occupancy_grid_19.png', vis_large)
+        success1 = cv2.imwrite('/tmp/occupancy_grid_19.png', vis)
+        success2 = cv2.imwrite('/tmp/occupancy_grid_19_grid.png', self.grid )
         if success1 and success2:
             self.get_logger().info("Saved occupancy grid to /tmp/occupancy_grid_18.png")
         else:
             self.get_logger().error("Failed to save image!")
-
-    # def add_grid_lines(self, img, scale_factor, original_shape):
-    #     """Add subtle grid lines every meter for reference"""
-    #     height, width = img.shape
-    #     # Grid spacing in original resolution (10 cells = 1 meter at 0.1m resolution)
-    #     original_grid_spacing = 10
-    #     grid_spacing = int(original_grid_spacing * scale_factor)
-    #
-    #     # Draw vertical lines
-    #     for x in range(0, width, grid_spacing):
-    #         cv2.line(img, (x, 0), (x, height - 1), 150, 1)
-    #
-    #     # Draw horizontal lines
-    #     for y in range(0, height, grid_spacing):
-    #         cv2.line(img, (0, y), (width - 1, y), 150, 1)
 
 
 def main(args=None):

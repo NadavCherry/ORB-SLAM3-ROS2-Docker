@@ -18,10 +18,22 @@ def generate_launch_description():
         #     name='map_builder_node',
         #     output='screen'
         # ),
+        # Node(
+        #     package='orb_slam3_planner',
+        #     executable='enhanced_map_builder_node',
+        #     name='enhanced_map_builder_node',
+        #     output='screen'
+        # ),
         Node(
             package='orb_slam3_planner',
-            executable='enhanced_map_builder_node',
-            name='enhanced_map_builder_node',
+            executable='autonomous_explorer_node',
+            name='autonomous_explorer_node',
             output='screen'
+        ),
+        Node(
+            package='orb_slam3_planner',
+            executable='autonomous_explorer_visualizer',
+            name='autonomous_explorer_visualizer'
+            # output='screen'
         ),
     ])
