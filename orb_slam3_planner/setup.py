@@ -19,9 +19,11 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
-            'map_builder_node = orb_slam3_planner.map_builder_node:main',
+            # 'map_builder_node = orb_slam3_planner.map_builder_node:main',
             'landmark_publisher_node = orb_slam3_planner.landmark_publisher_node:main',
             'enhanced_map_builder_node = orb_slam3_planner.enhanced_map_builder_node:main',  # New entry
+            'autonomous_explorer_node = orb_slam3_planner.autonomous_explorer_node:main',  # New entry
+            'autonomous_explorer_visualizer = orb_slam3_planner.autonomous_explorer_visualizer:main',
         ],
     },
 )
