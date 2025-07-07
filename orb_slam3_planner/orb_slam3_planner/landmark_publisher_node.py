@@ -53,7 +53,7 @@ class RawLandmarkPublisher(Node):
                 status = String()
                 status.data = f"Raw landmarks: {raw_count}"
                 self.status_pub.publish(status)
-                self.get_logger().info(status.data)
+                # self.get_logger().info(status.data)
                 self.last_raw_count = raw_count
 
         except Exception as e:
