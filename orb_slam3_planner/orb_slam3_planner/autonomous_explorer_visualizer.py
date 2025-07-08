@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 
 import rclpy
 from rclpy.node import Node
@@ -71,19 +72,15 @@ class AutonomousExplorerVisualizer(Node):
                 cv2.circle(img_large, (rx_large, ry_large),
                            radius=max(5, self.scale * 1), color=(255, 0, 0), thickness=-1)
 
-                # Draw direction arrow
-                if hasattr(self, 'robot_dir') and self.robot_dir is not None:
-                    arrow_len = self.scale * 2
-                    dir_vectors = {
-                        0: (0, -arrow_len),  # NORTH
-                        1: (arrow_len, 0),  # EAST
-                        2: (0, arrow_len),  # SOUTH
-                        3: (-arrow_len, 0),  # WEST
-                    }
-                    dx, dy = dir_vectors.get(self.robot_dir, (0, -arrow_len))
+                # Draw direction arrow (continuous 360°)
+                if self.robot_dir is not None:
+                    arrow_len = self.scale * 3  # Longer arrow
+                    dx = int(arrow_len * math.cos(self.robot_dir))
+                    dy = int(-arrow_len * math.sin(self.robot_dir))  # minus because of image flip
+
                     cv2.arrowedLine(img_large, (rx_large, ry_large),
                                     (rx_large + dx, ry_large + dy),
-                                    (0, 255, 255), 2, tipLength=0.5)
+                                    (0, 255, 255), 2, tipLength=0.4)
 
         # Draw goal position
         if self.goal_pos:

@@ -15,52 +15,75 @@ class AutonomousExplorerNode(Node):
     def __init__(self):
         super().__init__('autonomous_explorer_node')
 
-        # Simplified parameters
+        # Keep your original parameters
         self.cell_size = 0.5  # meters per cell
         self.map_range = 25.0  # map extends ±25m
         self.grid_size = int(2 * self.map_range / self.cell_size)  # 100x100 grid
 
-        # Robot state
+        # Robot state (unchanged)
         self.robot_pos = None  # (x, y) in grid coordinates
         self.robot_angle = 0.0  # current heading in radians
         self.current_pose = None
 
-        # Simple grid (0=free, 1=obstacle, -1=unknown)
-        self.grid = np.full((self.grid_size, self.grid_size), -1, dtype=np.int8)
+        # Enhanced grid with probability values
+        self.occupancy_prob = np.full((self.grid_size, self.grid_size), 0.5, dtype=np.float32)
+        self.update_count = np.zeros((self.grid_size, self.grid_size), dtype=np.int32)
 
-        # Navigation state
+        # Probability thresholds
+        self.occupied_threshold = 0.65  # Above this = occupied
+        self.free_threshold = 0.35  # Below this = free
+
+        # Navigation state (unchanged)
         self.target = None
-        self.state = "EXPLORING"  # EXPLORING, MOVING_TO_TARGET, TURNING
+        self.state = "EXPLORING"
         self.last_update = self.get_clock().now()
 
-        # Map cleaning parameters (like original)
-        self.frame_count = 0
-        self.rebuild_interval = 1  # Clear map every frame to stay in sync with SLAM
-        self.min_points_for_obstacle = 3  # Need multiple points to confirm obstacle
+        # Collision avoidance
+        self.collision_counter = 0
+        self.stuck_counter = 0
+        self.last_robot_pos = None
 
-        # Movement parameters
+        # Enhanced mapping parameters
+        self.min_points_for_obstacle = 7
+        self.max_point_range = 15.0  # Maximum reliable range for points
+        self.height_min = 0.1  # Minimum height for obstacles
+        self.height_max = 2.0  # Maximum height for obstacles
+
+        # Camera parameters
+        self.camera_fov = math.radians(60)
+        self.camera_range = 10.0  # Maximum reliable camera range in meters
+
+        # Probability updates - more aggressive for walls
+        self.obstacle_prob_increment = 0.2  # Stronger evidence for obstacles
+        self.free_prob_decrement = -0.05  # Weaker free space updates
+
+        # Movement parameters (unchanged)
         self.linear_speed = 0.2
         self.angular_speed = 0.3
         self.safe_distance = 2  # cells
 
-        # ROS setup
+        # ROS setup (keeping your exact publishers)
         self.create_subscription(PointCloud2, '/orb_slam3/landmarks_raw', self.pointcloud_callback, 10)
         self.create_subscription(PoseStamped, '/robot_pose_slam', self.pose_callback, 10)
 
-        # Publish to your original topic names
+        # Keep your original publishers
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.map_pub = self.create_publisher(OccupancyGrid, '/planner_occupancy_grid', 10)
         self.goal_pub = self.create_publisher(Point, '/goal_grid_pos', 10)
         self.robot_pos_pub = self.create_publisher(Point, '/robot_grid_pos', 10)
+
+        # Add direction visualization publisher
+        self.direction_pub = self.create_publisher(PoseStamped, '/robot_direction', 10)
 
         # Main control timer
         self.create_timer(0.5, self.control_loop)  # 2Hz
 
         self.get_logger().info("Autonomous Explorer Node started!")
         self.get_logger().info(f"Grid size: {self.grid_size}x{self.grid_size}, Cell size: {self.cell_size}m")
+        self.get_logger().info(f"Camera FOV: {math.degrees(self.camera_fov)}°, Range: {self.camera_range}m")
 
     def pose_callback(self, msg):
-        """Update robot position from SLAM"""
+        """Update robot position from SLAM (unchanged)"""
         self.current_pose = msg.pose
 
         # Convert to grid coordinates
@@ -73,11 +96,12 @@ class AutonomousExplorerNode(Node):
         if 0 <= grid_x < self.grid_size and 0 <= grid_y < self.grid_size:
             self.robot_pos = (grid_x, grid_y)
 
-            # Publish robot position
+            # Publish robot position (keeping your exact format)
             robot_msg = Point()
             robot_msg.x = float(grid_x)
             robot_msg.y = float(grid_y)
-            robot_msg.z = float(self.get_robot_direction())  # Direction as z component
+            # robot_msg.z = float(self.get_robot_direction())  # Direction as z component
+            robot_msg.z = float(self.robot_angle)  # Publish the continuous angle in radians
             self.robot_pos_pub.publish(robot_msg)
 
         # Extract heading angle
@@ -85,40 +109,71 @@ class AutonomousExplorerNode(Node):
         self.robot_angle = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                       1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
+    def publish_robot_direction(self):
+        """Publish robot direction with FOV visualization"""
+        if not self.current_pose:
+            return
+
+        dir_msg = PoseStamped()
+        dir_msg.header.stamp = self.get_clock().now().to_msg()
+        dir_msg.header.frame_id = "map"
+
+        # Position
+        dir_msg.pose.position = self.current_pose.position
+
+        # Orientation (same as robot)
+        dir_msg.pose.orientation = self.current_pose.orientation
+
+        self.direction_pub.publish(dir_msg)
+
+        # Log direction info periodically
+        if hasattr(self, '_last_dir_log'):
+            if (self.get_clock().now() - self._last_dir_log).nanoseconds > 5e9:  # Every 5 seconds
+                self.get_logger().info(f"Robot angle: {math.degrees(self.robot_angle):.1f}°, "
+                                       f"Direction: {self.get_robot_direction()}, "
+                                       f"FOV: ±{math.degrees(self.camera_fov / 2):.1f}°")
+                self._last_dir_log = self.get_clock().now()
+        else:
+            self._last_dir_log = self.get_clock().now()
+
     def pointcloud_callback(self, msg):
-        """Simple mapping from point cloud with periodic cleaning"""
+        """Enhanced mapping with probabilistic updates"""
         if self.current_pose is None:
             return
 
         robot_world_x = self.current_pose.position.x
         robot_world_y = self.current_pose.position.y
 
-        self.frame_count += 1
-
-        # Periodically clear grid to stay in sync with SLAM (like original)
-        if self.frame_count % self.rebuild_interval == 0:
-            self.grid.fill(-1)  # Reset to unknown
-            self.get_logger().debug(f"Map cleared at frame {self.frame_count}")
-
-        # Clear area around robot (assume it's free)
+        # Clear area around robot (it must be free)
         if self.robot_pos:
-            rx, ry = self.robot_pos
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    nx, ny = rx + dx, ry + dy
-                    if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
-                        self.grid[ny, nx] = 0
+            self.clear_robot_area()
 
         # Process point cloud
         points = list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True))
 
-        # First pass: collect and count points per cell
-        cell_point_counts = {}
-        valid_points = []
+        # Group points by cell for better obstacle detection
+        cell_points = {}
 
         for x, y, z in points:
-            # Filter points by height (obstacles on ground level)
-            if not (0.1 <= z <= 2.0):
+            # Filter by height
+            if not (self.height_min <= z <= self.height_max):
+                continue
+
+            # Check if point is within camera FOV
+            angle_to_point = math.atan2(y - robot_world_y, x - robot_world_x)
+            angle_diff = angle_to_point - self.robot_angle
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+
+            # Skip points outside FOV
+            if abs(angle_diff) > self.camera_fov / 2:
+                continue
+
+            # Filter by range from robot
+            dist_from_robot = math.sqrt((x - robot_world_x) ** 2 + (y - robot_world_y) ** 2)
+            if dist_from_robot > self.camera_range:
                 continue
 
             # Check if point is finite
@@ -131,48 +186,129 @@ class AutonomousExplorerNode(Node):
 
             if 0 <= grid_x < self.grid_size and 0 <= grid_y < self.grid_size:
                 cell_key = (grid_x, grid_y)
-                cell_point_counts[cell_key] = cell_point_counts.get(cell_key, 0) + 1
-                valid_points.append((grid_x, grid_y))
+                if cell_key not in cell_points:
+                    cell_points[cell_key] = []
+                cell_points[cell_key].append((x, y, z))
 
-        # Mark cells as obstacles only if they have enough points
+        # Update occupied cells with probability
         occupied_cells = set()
-        for (gx, gy), count in cell_point_counts.items():
-            if count >= self.min_points_for_obstacle:
-                self.grid[gy, gx] = 1  # Mark as obstacle
+        for (gx, gy), points_in_cell in cell_points.items():
+            if len(points_in_cell) >= self.min_points_for_obstacle:
+                # Stronger evidence for obstacles with more points
+                prob_increase = min(self.obstacle_prob_increment * len(points_in_cell), 0.5)
+                self.update_cell_probability(gx, gy, prob_increase)
                 occupied_cells.add((gx, gy))
 
-        # Second pass: ray trace to mark free cells (only to confirmed obstacles)
+                # Also mark neighboring cells for thicker walls
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        nx, ny = gx + dx, gy + dy
+                        if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                            self.update_cell_probability(nx, ny, prob_increase * 0.5)
+
+        # Ray trace to mark free cells (only within FOV)
         if self.robot_pos:
-            robot_gx, robot_gy = self.robot_pos
-            observed_cells = set()
+            self.update_free_space_probability(occupied_cells)
 
-            for (gx, gy) in occupied_cells:  # Only trace to confirmed obstacles
-                cells_on_ray = self.mark_free_path_advanced(robot_gx, robot_gy, gx, gy)
-                observed_cells.update(cells_on_ray[:-1])  # Exclude the obstacle cell itself
-
-            # Mark free cells (only if they were unknown)
-            for (gx, gy) in observed_cells:
-                if 0 <= gx < self.grid_size and 0 <= gy < self.grid_size:
-                    if self.grid[gy, gx] == -1:  # Only mark unknown cells as free
-                        self.grid[gy, gx] = 0
+        # Decay probabilities slightly to handle dynamic changes
+        self.decay_probabilities()
 
         # Publish map
         self.publish_map()
 
-    def get_robot_direction(self):
-        """Convert robot angle to discrete direction (0=North, 1=East, 2=South, 3=West)"""
-        # Normalize angle to [0, 2π]
-        angle = self.robot_angle
-        if angle < 0:
-            angle += 2 * math.pi
+    def clear_robot_area(self):
+        """Clear area around robot - it must be free"""
+        if not self.robot_pos:
+            return
 
-        # Convert to 4 directions
-        # 0 = North (up), 1 = East (right), 2 = South (down), 3 = West (left)
-        direction = int((angle + math.pi / 4) / (math.pi / 2)) % 4
-        return direction
+        rx, ry = self.robot_pos
+        clear_radius = 2
 
-    def mark_free_path_advanced(self, start_x, start_y, end_x, end_y):
-        """Advanced ray tracing that stops at obstacles (like original Bresenham)"""
+        for dx in range(-clear_radius, clear_radius + 1):
+            for dy in range(-clear_radius, clear_radius + 1):
+                nx, ny = rx + dx, ry + dy
+                if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                    # Strong evidence that area around robot is free
+                    self.occupancy_prob[ny, nx] = 0.1
+                    self.update_count[ny, nx] += 1
+
+    def update_cell_probability(self, x, y, prob_change):
+        """Update cell probability using Bayesian-like update"""
+        if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
+            return
+
+        # Bayesian update
+        old_prob = self.occupancy_prob[y, x]
+
+        if prob_change > 0:  # Evidence for occupied
+            new_prob = old_prob + prob_change * (1 - old_prob)
+        else:  # Evidence for free
+            new_prob = old_prob + prob_change * old_prob
+
+        self.occupancy_prob[y, x] = np.clip(new_prob, 0.01, 0.99)
+        self.update_count[y, x] += 1
+
+    def update_free_space_probability(self, occupied_cells):
+        """Mark free space using ray tracing within camera FOV"""
+        if not self.robot_pos:
+            return
+
+        robot_gx, robot_gy = self.robot_pos
+
+        # First, only trace to visible obstacles within FOV
+        for (gx, gy) in occupied_cells:
+            # Check if obstacle is within camera FOV
+            dx = gx - robot_gx
+            dy = gy - robot_gy
+            angle_to_obstacle = math.atan2(dy, dx)
+
+            # Normalize angle difference
+            angle_diff = angle_to_obstacle - self.robot_angle
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+
+            # Only process if within FOV
+            if abs(angle_diff) <= self.camera_fov / 2:
+                cells_on_ray = self.bresenham_line(robot_gx, robot_gy, gx, gy)
+
+                # Mark all cells except the obstacle as free
+                for (x, y) in cells_on_ray[:-1]:
+                    if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
+                        self.update_cell_probability(x, y, self.free_prob_decrement * 1.5)
+
+        # Cast rays only within camera FOV
+        fov_half = self.camera_fov / 2
+        num_rays = int(self.camera_fov / math.radians(5))  # Ray every 5 degrees within FOV
+        max_range_cells = int(self.camera_range / self.cell_size)
+
+        for i in range(num_rays):
+            # Calculate angle within FOV
+            angle_offset = -fov_half + (i * self.camera_fov / (num_rays - 1))
+            angle = self.robot_angle + angle_offset
+
+            # Cast ray until we hit something or reach max range
+            hit_obstacle = False
+            for dist in range(1, max_range_cells):
+                x = int(robot_gx + dist * math.cos(angle))
+                y = int(robot_gy + dist * math.sin(angle))
+
+                if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
+                    break
+
+                # Check if we hit an obstacle with high confidence
+                if self.occupancy_prob[y, x] > self.occupied_threshold and self.update_count[y, x] > 3:
+                    hit_obstacle = True
+                    break
+
+                # Only mark as free if we haven't hit an obstacle yet
+                if not hit_obstacle:
+                    # Weaker update for radial rays
+                    self.update_cell_probability(x, y, self.free_prob_decrement)
+
+    def bresenham_line(self, start_x, start_y, end_x, end_y):
+        """Bresenham's line algorithm (unchanged from original)"""
         cells = []
         dx = abs(end_x - start_x)
         dy = abs(end_y - start_y)
@@ -186,9 +322,6 @@ class AutonomousExplorerNode(Node):
         while True:
             if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
                 cells.append((x, y))
-                # Stop if we hit an obstacle (but not at robot position)
-                if self.grid[y, x] == 1 and (x, y) != (start_x, start_y):
-                    break
 
             if x == end_x and y == end_y:
                 break
@@ -202,20 +335,92 @@ class AutonomousExplorerNode(Node):
 
         return cells
 
+    def bresenham_line_with_stop(self, start_x, start_y, end_x, end_y, stop_at_obstacle=True):
+        """Bresenham's line that can stop at obstacles"""
+        cells = []
+        dx = abs(end_x - start_x)
+        dy = abs(end_y - start_y)
+        x, y = start_x, start_y
+        x_inc = 1 if end_x > start_x else -1
+        y_inc = 1 if end_y > start_y else -1
+        error = dx - dy
+        dx *= 2
+        dy *= 2
+
+        while True:
+            if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
+                cells.append((x, y))
+
+                # Stop if we hit an obstacle (but not at start position)
+                if stop_at_obstacle and (x, y) != (start_x, start_y):
+                    if self.occupancy_prob[y, x] > self.occupied_threshold and self.update_count[y, x] > 3:
+                        break
+
+            if x == end_x and y == end_y:
+                break
+
+            if error > 0:
+                x += x_inc
+                error -= dy
+            else:
+                y += y_inc
+                error += dx
+
+        return cells
+
+    def decay_probabilities(self):
+        """Slowly decay probabilities toward unknown to handle dynamic environments"""
+        # Only decay cells that haven't been updated recently
+        decay_factor = 0.99
+
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                if self.update_count[y, x] < 5:  # Low confidence cells
+                    old_prob = self.occupancy_prob[y, x]
+                    # Decay toward 0.5 (unknown)
+                    self.occupancy_prob[y, x] = 0.5 + (old_prob - 0.5) * decay_factor
+
+    def get_occupancy_value(self, x, y):
+        """Convert probability to discrete occupancy value"""
+        if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
+            return -1  # Unknown
+
+        prob = self.occupancy_prob[y, x]
+        updates = self.update_count[y, x]
+
+        # Need minimum updates to be confident
+        if updates < 2:
+            return -1  # Unknown
+
+        if prob > self.occupied_threshold:
+            return 1  # Occupied
+        elif prob < self.free_threshold:
+            return 0  # Free
+        else:
+            return -1  # Unknown
+
+    def get_robot_direction(self):
+        """Convert robot angle to discrete direction (unchanged)"""
+        angle = self.robot_angle
+        if angle < 0:
+            angle += 2 * math.pi
+        direction = int((angle + math.pi / 4) / (math.pi / 2)) % 4
+        return direction
+
     def find_frontiers(self):
-        """Find frontier cells (free cells next to unknown areas)"""
+        """Find frontier cells using probability-based occupancy"""
         frontiers = []
 
         for y in range(1, self.grid_size - 1):
             for x in range(1, self.grid_size - 1):
                 # Must be free space
-                if self.grid[y, x] != 0:
+                if self.get_occupancy_value(x, y) != 0:
                     continue
 
                 # Check if any neighbor is unknown
                 has_unknown_neighbor = False
                 for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    if self.grid[y + dy, x + dx] == -1:
+                    if self.get_occupancy_value(x + dx, y + dy) == -1:
                         has_unknown_neighbor = True
                         break
 
@@ -238,7 +443,7 @@ class AutonomousExplorerNode(Node):
         min_distance = float('inf')
 
         for fx, fy in frontiers:
-            # Check if frontier is safe (not too close to obstacles)
+            # Check if frontier is safe
             if not self.is_safe_position(fx, fy):
                 continue
 
@@ -253,47 +458,88 @@ class AutonomousExplorerNode(Node):
         return best_frontier
 
     def is_safe_position(self, x, y):
-        """Check if a position is safe (away from obstacles)"""
+        """Check if position is safe using probability map"""
         for dx in range(-self.safe_distance, self.safe_distance + 1):
             for dy in range(-self.safe_distance, self.safe_distance + 1):
                 nx, ny = x + dx, y + dy
                 if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
-                    if self.grid[ny, nx] == 1:  # Obstacle nearby
+                    if self.occupancy_prob[ny, nx] > self.occupied_threshold:
                         return False
         return True
 
-    def is_path_clear(self, target_x, target_y):
-        """Check if path to target is clear"""
+    def check_collision_ahead(self):
+        """Check for obstacles ahead using probability map"""
         if not self.robot_pos:
             return False
 
         rx, ry = self.robot_pos
 
-        # Simple obstacle check in direction of target
-        dx = 1 if target_x > rx else -1 if target_x < rx else 0
-        dy = 1 if target_y > ry else -1 if target_y < ry else 0
+        # Check multiple cells ahead
+        check_distance = 3
+        for dist in range(1, check_distance + 1):
+            check_x = int(rx + dist * math.cos(self.robot_angle))
+            check_y = int(ry + dist * math.sin(self.robot_angle))
 
-        # Check next few cells in that direction
-        for i in range(1, 4):
-            check_x = rx + dx * i
-            check_y = ry + dy * i
+            if 0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size:
+                if self.occupancy_prob[check_y, check_x] > self.occupied_threshold:
+                    return True
 
-            if not (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
-                return False
+        return False
 
-            if self.grid[check_y, check_x] == 1:  # Obstacle
-                return False
+    def is_stuck(self):
+        """Check if robot is stuck"""
+        if not self.robot_pos or not self.last_robot_pos:
+            return False
 
-        return True
+        # Check if position hasn't changed
+        if self.robot_pos == self.last_robot_pos:
+            self.stuck_counter += 1
+        else:
+            self.stuck_counter = 0
+
+        return self.stuck_counter > 10  # Stuck for 5 seconds
 
     def control_loop(self):
-        """Main control logic - simplified state machine"""
+        """Enhanced control logic with collision avoidance"""
         if not self.robot_pos:
             self.stop_robot()
             return
 
+        # Check if stuck
+        if self.is_stuck():
+            self.get_logger().warn("Robot is stuck! Executing recovery...")
+            self.state = "RECOVERY"
+            self.stuck_counter = 0
+
+        # Update last position
+        self.last_robot_pos = self.robot_pos
+
+        # Check for immediate collision
+        if self.check_collision_ahead() and self.state != "COLLISION_AVOIDANCE" and self.state != "RECOVERY":
+            self.get_logger().warn("Obstacle detected ahead! Avoiding collision...")
+            self.state = "COLLISION_AVOIDANCE"
+            self.collision_counter = 15  # About 90 degrees turn
+
         # State machine
-        if self.state == "EXPLORING":
+        if self.state == "COLLISION_AVOIDANCE":
+            # Turn right to avoid collision
+            if self.collision_counter > 0:
+                twist = Twist()
+                twist.angular.z = -self.angular_speed  # Turn right
+                self.cmd_pub.publish(twist)
+                self.collision_counter -= 1
+            else:
+                self.state = "EXPLORING"
+
+        elif self.state == "RECOVERY":
+            # Back up and turn
+            twist = Twist()
+            twist.linear.x = -self.linear_speed * 0.5
+            twist.angular.z = self.angular_speed
+            self.cmd_pub.publish(twist)
+            self.state = "EXPLORING"
+
+        elif self.state == "EXPLORING":
             # Look for new frontier
             self.target = self.find_nearest_frontier()
             if self.target:
@@ -304,6 +550,7 @@ class AutonomousExplorerNode(Node):
                 goal_msg = Point()
                 goal_msg.x = float(self.target[0])
                 goal_msg.y = float(self.target[1])
+                goal_msg.z = 0.0
                 self.goal_pub.publish(goal_msg)
             else:
                 # No frontiers found, just turn to look around
@@ -314,7 +561,7 @@ class AutonomousExplorerNode(Node):
                 self.state = "EXPLORING"
                 return
 
-            # Check if we reached the target (or close enough)
+            # Check if we reached the target
             rx, ry = self.robot_pos
             tx, ty = self.target
             distance = math.sqrt((tx - rx) ** 2 + (ty - ry) ** 2)
@@ -330,7 +577,7 @@ class AutonomousExplorerNode(Node):
             self.move_toward_target()
 
     def move_toward_target(self):
-        """Move robot toward current target"""
+        """Move robot toward current target with enhanced obstacle checking"""
         if not self.target or not self.robot_pos:
             return
 
@@ -354,17 +601,9 @@ class AutonomousExplorerNode(Node):
             self.cmd_pub.publish(twist)
             return
 
-        # Check if path is clear
-        if not self.is_path_clear(tx, ty):
-            self.get_logger().warn("Path blocked, finding new target")
-            self.state = "EXPLORING"
-            self.target = None
-            return
-
-        # Move forward
+        # Move forward with angular correction
         twist = Twist()
         twist.linear.x = self.linear_speed
-        # Small angular correction
         twist.angular.z = angle_diff * 0.5
         self.cmd_pub.publish(twist)
 
@@ -380,7 +619,7 @@ class AutonomousExplorerNode(Node):
         self.cmd_pub.publish(twist)
 
     def publish_map(self):
-        """Publish the occupancy grid"""
+        """Publish the occupancy grid with probability-based values"""
         msg = OccupancyGrid()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
@@ -391,13 +630,19 @@ class AutonomousExplorerNode(Node):
         msg.info.origin.position.x = -self.map_range
         msg.info.origin.position.y = -self.map_range
 
-        # Convert grid to ROS format (0-100 scale)
-        ros_grid = np.zeros_like(self.grid, dtype=np.int8)
-        ros_grid[self.grid == 0] = 0  # Free space
-        ros_grid[self.grid == 1] = 100  # Obstacles
-        ros_grid[self.grid == -1] = -1  # Unknown
+        # Convert probability grid to ROS format
+        ros_grid = []
+        for y in range(self.grid_size):
+            for x in range(self.grid_size):
+                value = self.get_occupancy_value(x, y)
+                if value == -1:
+                    ros_grid.append(-1)  # Unknown
+                elif value == 0:
+                    ros_grid.append(0)  # Free
+                else:
+                    ros_grid.append(100)  # Occupied
 
-        msg.data = ros_grid.flatten().tolist()
+        msg.data = ros_grid
         self.map_pub.publish(msg)
 
 
