@@ -32,7 +32,7 @@ class AutonomousExplorerVisualizer(Node):
     def robot_pos_callback(self, msg):
         """Update robot position and direction"""
         self.robot_pos = (int(msg.x), int(msg.y))
-        self.robot_dir = int(msg.z)
+        self.robot_dir = float(msg.z)
 
     def goal_callback(self, msg):
         """Update goal position"""

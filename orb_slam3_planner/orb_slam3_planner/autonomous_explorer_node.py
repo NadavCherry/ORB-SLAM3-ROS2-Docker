@@ -8,7 +8,6 @@ from nav_msgs.msg import OccupancyGrid
 import sensor_msgs_py.point_cloud2 as pc2
 import numpy as np
 import math
-from typing import Optional, Tuple, List
 
 
 class AutonomousExplorerNode(Node):
@@ -45,7 +44,6 @@ class AutonomousExplorerNode(Node):
 
         # Enhanced mapping parameters
         self.min_points_for_obstacle = 7
-        self.max_point_range = 4.0  # Maximum reliable range for points
         self.height_min = 0.1  # Minimum height for obstacles
         self.height_max = 2.0  # Maximum height for obstacles
 
@@ -56,6 +54,7 @@ class AutonomousExplorerNode(Node):
         # Probability updates - more aggressive for walls
         self.obstacle_prob_increment = 0.2  # Stronger evidence for obstacles
         self.free_prob_decrement = -0.05  # Weaker free space updates
+        self.freeze_update_count = 8
 
         # Movement parameters
         self.linear_speed = 0.6
@@ -93,6 +92,11 @@ class AutonomousExplorerNode(Node):
         grid_x = int((world_x + self.map_range) / self.cell_size)
         grid_y = int((world_y + self.map_range) / self.cell_size)
 
+        # Extract heading angle
+        q = msg.pose.orientation
+        self.robot_angle = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                      1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
         if 0 <= grid_x < self.grid_size and 0 <= grid_y < self.grid_size:
             self.robot_pos = (grid_x, grid_y)
 
@@ -100,14 +104,8 @@ class AutonomousExplorerNode(Node):
             robot_msg = Point()
             robot_msg.x = float(grid_x)
             robot_msg.y = float(grid_y)
-            # robot_msg.z = float(self.get_robot_direction())  # Direction as z component
-            robot_msg.z = float(self.robot_angle)  # Publish the continuous angle in radians
+            robot_msg.z = float(self.robot_angle)
             self.robot_pos_pub.publish(robot_msg)
-
-        # Extract heading angle
-        q = msg.pose.orientation
-        self.robot_angle = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                      1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def publish_robot_direction(self):
         """Publish robot direction with FOV visualization"""
@@ -136,6 +134,11 @@ class AutonomousExplorerNode(Node):
         else:
             self._last_dir_log = self.get_clock().now()
 
+    def normalize_angle(self, angle):
+        """Normalize angle to range [-pi, pi]"""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
     def pointcloud_callback(self, msg):
         """Enhanced mapping with probabilistic updates"""
         if self.current_pose is None:
@@ -162,10 +165,7 @@ class AutonomousExplorerNode(Node):
             # Check if point is within camera FOV
             angle_to_point = math.atan2(y - robot_world_y, x - robot_world_x)
             angle_diff = angle_to_point - self.robot_angle
-            while angle_diff > math.pi:
-                angle_diff -= 2 * math.pi
-            while angle_diff < -math.pi:
-                angle_diff += 2 * math.pi
+            angle_diff = self.normalize_angle(angle_diff)
 
             # Skip points outside FOV
             if abs(angle_diff) > self.camera_fov / 2:
@@ -264,10 +264,7 @@ class AutonomousExplorerNode(Node):
 
             # Normalize angle difference
             angle_diff = angle_to_obstacle - self.robot_angle
-            while angle_diff > math.pi:
-                angle_diff -= 2 * math.pi
-            while angle_diff < -math.pi:
-                angle_diff += 2 * math.pi
+            angle_diff = self.normalize_angle(angle_diff)
 
             # Only process if within FOV
             if abs(angle_diff) <= self.camera_fov / 2:
@@ -335,38 +332,6 @@ class AutonomousExplorerNode(Node):
 
         return cells
 
-    def bresenham_line_with_stop(self, start_x, start_y, end_x, end_y, stop_at_obstacle=True):
-        """Bresenham's line that can stop at obstacles"""
-        cells = []
-        dx = abs(end_x - start_x)
-        dy = abs(end_y - start_y)
-        x, y = start_x, start_y
-        x_inc = 1 if end_x > start_x else -1
-        y_inc = 1 if end_y > start_y else -1
-        error = dx - dy
-        dx *= 2
-        dy *= 2
-
-        while True:
-            if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
-                cells.append((x, y))
-
-                # Stop if we hit an obstacle (but not at start position)
-                if stop_at_obstacle and (x, y) != (start_x, start_y):
-                    if self.occupancy_prob[y, x] > self.occupied_threshold and self.update_count[y, x] > 3:
-                        break
-
-            if x == end_x and y == end_y:
-                break
-
-            if error > 0:
-                x += x_inc
-                error -= dy
-            else:
-                y += y_inc
-                error += dx
-
-        return cells
 
     def decay_probabilities(self):
         """Slowly decay probabilities toward unknown to handle dynamic environments"""
@@ -375,7 +340,7 @@ class AutonomousExplorerNode(Node):
 
         for y in range(self.grid_size):
             for x in range(self.grid_size):
-                if self.update_count[y, x] < 5:  # Low confidence cells
+                if self.update_count[y, x] < self.freeze_update_count:  # Low confidence cells
                     old_prob = self.occupancy_prob[y, x]
                     # Decay toward 0.5 (unknown)
                     self.occupancy_prob[y, x] = 0.5 + (old_prob - 0.5) * decay_factor
@@ -534,8 +499,8 @@ class AutonomousExplorerNode(Node):
         elif self.state == "RECOVERY":
             # Back up and turn
             twist = Twist()
-            twist.linear.x = -self.linear_speed * 0.5
-            twist.angular.z = self.angular_speed
+            twist.linear.x = -self.linear_speed * 0.8
+            twist.angular.z = self.angular_speed * 1.5
             self.cmd_pub.publish(twist)
             self.state = "EXPLORING"
 
@@ -589,16 +554,12 @@ class AutonomousExplorerNode(Node):
         angle_diff = target_angle - self.robot_angle
 
         # Normalize angle difference
-        while angle_diff > math.pi:
-            angle_diff -= 2 * math.pi
-        while angle_diff < -math.pi:
-            angle_diff += 2 * math.pi
+        angle_diff = self.normalize_angle(angle_diff)
 
-        # If we need to turn significantly, just turn
+        # If we need to turn significantly
         if abs(angle_diff) > 0.3:  # ~17 degrees
             twist = Twist()
             twist.angular.z = self.angular_speed if angle_diff > 0 else -self.angular_speed
-            twist.linear.x = self.linear_speed * 0.5
             self.cmd_pub.publish(twist)
             return
 
