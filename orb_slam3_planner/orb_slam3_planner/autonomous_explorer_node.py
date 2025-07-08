@@ -20,7 +20,7 @@ class AutonomousExplorerNode(Node):
         self.map_range = 25.0  # map extends ±25m
         self.grid_size = int(2 * self.map_range / self.cell_size)  # 100x100 grid
 
-        # Robot state (unchanged)
+        # Robot state
         self.robot_pos = None  # (x, y) in grid coordinates
         self.robot_angle = 0.0  # current heading in radians
         self.current_pose = None
@@ -33,7 +33,7 @@ class AutonomousExplorerNode(Node):
         self.occupied_threshold = 0.65  # Above this = occupied
         self.free_threshold = 0.35  # Below this = free
 
-        # Navigation state (unchanged)
+        # Navigation state
         self.target = None
         self.state = "EXPLORING"
         self.last_update = self.get_clock().now()
@@ -45,22 +45,22 @@ class AutonomousExplorerNode(Node):
 
         # Enhanced mapping parameters
         self.min_points_for_obstacle = 7
-        self.max_point_range = 15.0  # Maximum reliable range for points
+        self.max_point_range = 4.0  # Maximum reliable range for points
         self.height_min = 0.1  # Minimum height for obstacles
         self.height_max = 2.0  # Maximum height for obstacles
 
         # Camera parameters
         self.camera_fov = math.radians(60)
-        self.camera_range = 10.0  # Maximum reliable camera range in meters
+        self.camera_range = 5.0  # Maximum reliable camera range in meters
 
         # Probability updates - more aggressive for walls
         self.obstacle_prob_increment = 0.2  # Stronger evidence for obstacles
         self.free_prob_decrement = -0.05  # Weaker free space updates
 
-        # Movement parameters (unchanged)
-        self.linear_speed = 0.2
+        # Movement parameters
+        self.linear_speed = 0.6
         self.angular_speed = 0.3
-        self.safe_distance = 2  # cells
+        self.safe_distance = 1 # cells
 
         # ROS setup (keeping your exact publishers)
         self.create_subscription(PointCloud2, '/orb_slam3/landmarks_raw', self.pointcloud_callback, 10)
@@ -83,7 +83,7 @@ class AutonomousExplorerNode(Node):
         self.get_logger().info(f"Camera FOV: {math.degrees(self.camera_fov)}°, Range: {self.camera_range}m")
 
     def pose_callback(self, msg):
-        """Update robot position from SLAM (unchanged)"""
+        """Update robot position from SLAM """
         self.current_pose = msg.pose
 
         # Convert to grid coordinates
@@ -308,7 +308,7 @@ class AutonomousExplorerNode(Node):
                     self.update_cell_probability(x, y, self.free_prob_decrement)
 
     def bresenham_line(self, start_x, start_y, end_x, end_y):
-        """Bresenham's line algorithm (unchanged from original)"""
+        """Bresenham's line algorithm """
         cells = []
         dx = abs(end_x - start_x)
         dy = abs(end_y - start_y)
@@ -400,7 +400,7 @@ class AutonomousExplorerNode(Node):
             return -1  # Unknown
 
     def get_robot_direction(self):
-        """Convert robot angle to discrete direction (unchanged)"""
+        """Convert robot angle to discrete direction"""
         angle = self.robot_angle
         if angle < 0:
             angle += 2 * math.pi
@@ -598,6 +598,7 @@ class AutonomousExplorerNode(Node):
         if abs(angle_diff) > 0.3:  # ~17 degrees
             twist = Twist()
             twist.angular.z = self.angular_speed if angle_diff > 0 else -self.angular_speed
+            twist.linear.x = self.linear_speed * 0.5
             self.cmd_pub.publish(twist)
             return
 
@@ -611,6 +612,7 @@ class AutonomousExplorerNode(Node):
         """Turn to explore when no frontiers are found"""
         twist = Twist()
         twist.angular.z = self.angular_speed * 0.5  # Slow turn
+        twist.linear.x = self.linear_speed * 0.5
         self.cmd_pub.publish(twist)
 
     def stop_robot(self):
