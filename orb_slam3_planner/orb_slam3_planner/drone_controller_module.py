@@ -19,7 +19,7 @@ class DroneController:
         self.get_logger = node.get_logger
         self.get_clock = node.get_clock
         self.cmd_pub = node.cmd_pub  # Publisher to /cmd_vel
-        self.get_logger().info("✅ DroneController initialized")
+        self.get_logger().info("DroneController initialized")
 
     def move_toward_target(self):
         """

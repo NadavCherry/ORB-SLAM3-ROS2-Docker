@@ -16,13 +16,21 @@ class RawLandmarkPublisher(Node):
     def __init__(self):
         super().__init__('raw_landmark_publisher')
 
+        # Declare namespace parameter
+        self.declare_parameter('robot_namespace', '')
+        self.robot_namespace = self.get_parameter('robot_namespace').value.rstrip('/')
+        ns = f'/{self.robot_namespace}' if self.robot_namespace else ''
+
+
         # Publisher
-        self.raw_landmark_pub = self.create_publisher(PointCloud2, '/orb_slam3/landmarks_raw', 10)
-        self.status_pub = self.create_publisher(String, '/orb_slam3/landmark_status', 10)
+        self.raw_landmark_pub = self.create_publisher(PointCloud2, f'{ns}/orb_slam3/landmarks_raw', 10)
+        self.status_pub = self.create_publisher(String, f'{ns}/orb_slam3/landmark_status', 10)
 
         # Service client
-        self.get_landmarks_client = self.create_client(GetAllLandmarksInMap, '/orb_slam3/get_all_landmarks_in_map')
-        self.get_logger().info('Waiting for ORB-SLAM3 landmark service...')
+        service_name = f'{ns}/orb_slam3/get_all_landmarks_in_map'
+        self.get_landmarks_client = self.create_client(GetAllLandmarksInMap, service_name)
+
+        self.get_logger().info(f'Waiting for ORB-SLAM3 landmark service: {service_name}')
         self.get_landmarks_client.wait_for_service()
         self.get_logger().info('Service ready!')
 

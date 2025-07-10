@@ -12,6 +12,9 @@ import cv2
 class AutonomousExplorerVisualizer(Node):
     def __init__(self):
         super().__init__('autonomous_explorer_visualizer')
+        self.declare_parameter('robot_namespace', '')
+        self.robot_namespace = self.get_parameter('robot_namespace').value.rstrip('/')
+        ns = f'/{self.robot_namespace}' if self.robot_namespace else ''
 
         # Visualization parameters
         self.scale = 7  # Scale factor for display (same as original)
@@ -23,9 +26,9 @@ class AutonomousExplorerVisualizer(Node):
         self.goal_pos = None
 
         # Subscribers - use your original topic names
-        self.create_subscription(OccupancyGrid, '/planner_occupancy_grid', self.map_callback, 10)
-        self.create_subscription(Point, '/goal_grid_pos', self.goal_callback, 10)
-        self.create_subscription(Point, '/robot_grid_pos', self.robot_pos_callback, 10)
+        self.create_subscription(OccupancyGrid, f'{ns}/planner_occupancy_grid', self.map_callback, 10)
+        self.create_subscription(Point, f'{ns}/goal_grid_pos', self.goal_callback, 10)
+        self.create_subscription(Point, f'{ns}/robot_grid_pos', self.robot_pos_callback, 10)
 
         self.get_logger().info('Autonomous Explorer Visualizer Node started')
 

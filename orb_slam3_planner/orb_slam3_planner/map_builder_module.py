@@ -22,7 +22,7 @@ class MapBuilder:
         self.get_clock = node.get_clock
         self.publish_map = node.publish_map
         self.update_cell_probability = node.update_cell_probability
-        self.get_logger().info("✅ MapBuilder initialized")
+        self.get_logger().info("MapBuilder initialized")
 
     def pointcloud_callback(self, msg):
         """

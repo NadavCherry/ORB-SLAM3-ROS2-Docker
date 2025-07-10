@@ -28,12 +28,19 @@ class AutonomousExplorerNode(Node):
     def __init__(self):
         super().__init__('autonomous_explorer_node')
 
+
+        # ======================
+        # Namespace & Parameters
+        # ======================
+        self.declare_parameter('robot_namespace', '')
+        self.robot_namespace = self.get_parameter('robot_namespace').value.rstrip('/')
+
         # ======================
         # Map Parameters
         # ======================
-        self.cell_size = 0.25             # meters per cell
-        self.map_range = 20.0             # meters (±range)
-        self.grid_size = int(2 * self.map_range / self.cell_size)  # grid dimensions
+        self.cell_size = 0.25
+        self.map_range = 20.0
+        self.grid_size = int(2 * self.map_range / self.cell_size)
 
         self.occupancy_prob = np.full((self.grid_size, self.grid_size), 0.5, dtype=np.float32)
         self.update_count = np.zeros((self.grid_size, self.grid_size), dtype=np.int32)
@@ -87,26 +94,25 @@ class AutonomousExplorerNode(Node):
         # ======================
         # ROS2 Setup
         # ======================
-        # 1. Publishers
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.map_pub = self.create_publisher(OccupancyGrid, '/planner_occupancy_grid', 10)
-        self.goal_pub = self.create_publisher(Point, '/goal_grid_pos', 10)
-        self.robot_pos_pub = self.create_publisher(Point, '/robot_grid_pos', 10)
-        self.direction_pub = self.create_publisher(PoseStamped, '/robot_direction', 10)
+        ns = f'/{self.robot_namespace}' if self.robot_namespace else ''
 
-        # 3. Submodules (only AFTER publishers exist)
+        self.cmd_pub = self.create_publisher(Twist, f'{ns}/cmd_vel', 10)
+        self.map_pub = self.create_publisher(OccupancyGrid, f'{ns}/planner_occupancy_grid', 10)
+        self.goal_pub = self.create_publisher(Point, f'{ns}/goal_grid_pos', 10)
+        self.robot_pos_pub = self.create_publisher(Point, f'{ns}/robot_grid_pos', 10)
+        self.direction_pub = self.create_publisher(PoseStamped, f'{ns}/robot_direction', 10)
+
         self.mapper = MapBuilder(self)
         self.planner = FrontierPlanner(self)
         self.controller = DroneController(self)
 
-        # 2. Subscriptions
-        self.create_subscription(PointCloud2, '/orb_slam3/landmarks_raw', self.mapper.pointcloud_callback, 10)
-        self.create_subscription(PoseStamped, '/robot_pose_slam', self.pose_callback, 10)
+        self.create_subscription(PointCloud2, f'{ns}/orb_slam3/landmarks_raw', self.mapper.pointcloud_callback, 10)
+        self.create_subscription(PoseStamped, f'{ns}/robot_pose_slam', self.pose_callback, 10)
 
-        # 4. Timers
         self.create_timer(0.5, self.control_loop)
 
-        self.get_logger().info("Autonomous Explorer Node started!")
+        self.get_logger().info(f"Autonomous Explorer Node started for namespace: {self.robot_namespace}")
+
 
     def update_cell_probability(self, x, y, prob_change):
         """
