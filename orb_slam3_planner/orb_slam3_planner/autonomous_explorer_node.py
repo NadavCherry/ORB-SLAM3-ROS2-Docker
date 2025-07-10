@@ -15,8 +15,8 @@ class AutonomousExplorerNode(Node):
         super().__init__('autonomous_explorer_node')
 
         # Keep your original parameters
-        self.cell_size = 0.5  # meters per cell
-        self.map_range = 25.0  # map extends ±25m
+        self.cell_size = 0.25  # meters per cell
+        self.map_range = 20.0  # map extends ±25m
         self.grid_size = int(2 * self.map_range / self.cell_size)  # 100x100 grid
 
         # Robot state
@@ -29,7 +29,7 @@ class AutonomousExplorerNode(Node):
         self.update_count = np.zeros((self.grid_size, self.grid_size), dtype=np.int32)
 
         # Probability thresholds
-        self.occupied_threshold = 0.65  # Above this = occupied
+        self.occupied_threshold = 0.75  # Above this = occupied
         self.free_threshold = 0.35  # Below this = free
 
         # Navigation state
@@ -43,13 +43,13 @@ class AutonomousExplorerNode(Node):
         self.last_robot_pos = None
 
         # Enhanced mapping parameters
-        self.min_points_for_obstacle = 7
+        self.min_points_for_obstacle = 20
         self.height_min = 0.1  # Minimum height for obstacles
         self.height_max = 2.0  # Maximum height for obstacles
 
         # Camera parameters
         self.camera_fov = math.radians(60)
-        self.camera_range = 5.0  # Maximum reliable camera range in meters
+        self.camera_range = 10.0  # Maximum reliable camera range in meters
 
         # Probability updates - more aggressive for walls
         self.obstacle_prob_increment = 0.2  # Stronger evidence for obstacles
@@ -58,8 +58,21 @@ class AutonomousExplorerNode(Node):
 
         # Movement parameters
         self.linear_speed = 0.6
-        self.angular_speed = 0.3
-        self.safe_distance = 1 # cells
+        self.angular_speed = 0.5
+        self.safe_distance = 4 # cells
+
+        # Track exploration history
+        self.visited_targets = set()  # Remember where we've been
+        self.exploration_radius = 2  # How close counts as "visited"
+
+        # Adaptive speed based on environment
+        self.adaptive_speed = True
+        self.min_linear_speed = 0.3
+        self.max_linear_speed = 0.8
+
+        # Better frontier scoring
+        self.use_frontier_scoring = True
+        self.last_frontier_update = self.get_clock().now()
 
         # ROS setup (keeping your exact publishers)
         self.create_subscription(PointCloud2, '/orb_slam3/landmarks_raw', self.pointcloud_callback, 10)
@@ -138,7 +151,6 @@ class AutonomousExplorerNode(Node):
         """Normalize angle to range [-pi, pi]"""
         return (angle + math.pi) % (2 * math.pi) - math.pi
 
-
     def pointcloud_callback(self, msg):
         """Enhanced mapping with probabilistic updates"""
         if self.current_pose is None:
@@ -147,9 +159,9 @@ class AutonomousExplorerNode(Node):
         robot_world_x = self.current_pose.position.x
         robot_world_y = self.current_pose.position.y
 
-        # Clear area around robot (it must be free)
-        if self.robot_pos:
-            self.clear_robot_area()
+        # # Clear area around robot (it must be free)
+        # if self.robot_pos:
+        #     self.clear_robot_area()
 
         # Process point cloud
         points = list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True))
@@ -222,7 +234,7 @@ class AutonomousExplorerNode(Node):
             return
 
         rx, ry = self.robot_pos
-        clear_radius = 2
+        clear_radius = 1
 
         for dx in range(-clear_radius, clear_radius + 1):
             for dy in range(-clear_radius, clear_radius + 1):
@@ -332,7 +344,6 @@ class AutonomousExplorerNode(Node):
 
         return cells
 
-
     def decay_probabilities(self):
         """Slowly decay probabilities toward unknown to handle dynamic environments"""
         # Only decay cells that haven't been updated recently
@@ -394,8 +405,42 @@ class AutonomousExplorerNode(Node):
 
         return frontiers
 
-    def find_nearest_frontier(self):
-        """Find the nearest safe frontier to explore"""
+    def calculate_frontier_score(self, fx, fy, rx, ry):
+        """Calculate score for a frontier based on multiple factors"""
+        # Distance to frontier
+        distance = math.sqrt((fx - rx) ** 2 + (fy - ry) ** 2)
+
+        # Check if we've been near this frontier before
+        novelty_bonus = 1.0
+        for visited_x, visited_y in self.visited_targets:
+            dist_to_visited = math.sqrt((fx - visited_x) ** 2 + (fy - visited_y) ** 2)
+            if dist_to_visited < self.exploration_radius:
+                novelty_bonus = 0.3  # Reduce score for previously visited areas
+                break
+
+        # Count unknown cells around the frontier (information gain)
+        unknown_count = 0
+        check_radius = 3
+        for dx in range(-check_radius, check_radius + 1):
+            for dy in range(-check_radius, check_radius + 1):
+                nx, ny = fx + dx, fy + dy
+                if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                    if self.get_occupancy_value(nx, ny) == -1:
+                        unknown_count += 1
+
+        # Calculate angle to frontier (prefer frontiers in current direction)
+        angle_to_frontier = math.atan2(fy - ry, fx - rx)
+        angle_diff = abs(self.normalize_angle(angle_to_frontier - self.robot_angle))
+        angle_factor = 1.0 - (angle_diff / math.pi) * 0.3  # Small penalty for turning
+
+        # Combine factors into score (lower is better)
+        # Distance is primary factor, but modified by others
+        score = distance / novelty_bonus / (1 + unknown_count * 0.1) / angle_factor
+
+        return score
+
+    def find_best_frontier(self):
+        """Find the best frontier using scoring system"""
         if not self.robot_pos:
             return None
 
@@ -405,22 +450,58 @@ class AutonomousExplorerNode(Node):
 
         rx, ry = self.robot_pos
         best_frontier = None
-        min_distance = float('inf')
+        best_score = float('inf')
 
         for fx, fy in frontiers:
             # Check if frontier is safe
             if not self.is_safe_position(fx, fy):
                 continue
 
-            # Calculate distance
+            # Skip if too close or too far
             distance = math.sqrt((fx - rx) ** 2 + (fy - ry) ** 2)
+            if distance < 3 or distance > 30:
+                continue
 
-            # Prefer frontiers that are not too close or too far
-            if 3 < distance < 20 and distance < min_distance:
-                min_distance = distance
+            # Calculate score
+            score = self.calculate_frontier_score(fx, fy, rx, ry)
+
+            if score < best_score:
+                best_score = score
                 best_frontier = (fx, fy)
 
         return best_frontier
+
+    def find_nearest_frontier(self):
+        """Wrapper to use either scoring or simple nearest frontier"""
+        if self.use_frontier_scoring:
+            return self.find_best_frontier()
+        else:
+            # Original implementation
+            if not self.robot_pos:
+                return None
+
+            frontiers = self.find_frontiers()
+            if not frontiers:
+                return None
+
+            rx, ry = self.robot_pos
+            best_frontier = None
+            min_distance = float('inf')
+
+            for fx, fy in frontiers:
+                # Check if frontier is safe
+                if not self.is_safe_position(fx, fy):
+                    continue
+
+                # Calculate distance
+                distance = math.sqrt((fx - rx) ** 2 + (fy - ry) ** 2)
+
+                # Prefer frontiers that are not too close or too far
+                if 3 < distance < 20 and distance < min_distance:
+                    min_distance = distance
+                    best_frontier = (fx, fy)
+
+            return best_frontier
 
     def is_safe_position(self, x, y):
         """Check if position is safe using probability map"""
@@ -433,23 +514,70 @@ class AutonomousExplorerNode(Node):
         return True
 
     def check_collision_ahead(self):
-        """Check for obstacles ahead using probability map"""
+        """Check for obstacles ahead in a cone matching robot width"""
         if not self.robot_pos:
             return False
 
         rx, ry = self.robot_pos
 
-        # Check multiple cells ahead
-        check_distance = 3
-        for dist in range(1, check_distance + 1):
-            check_x = int(rx + dist * math.cos(self.robot_angle))
-            check_y = int(ry + dist * math.sin(self.robot_angle))
+        # Robot parameters
+        robot_width_cells = 1  # How wide the robot is in cells
+        check_distance = self.safe_distance  # How far ahead to check
 
-            if 0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size:
-                if self.occupancy_prob[check_y, check_x] > self.occupied_threshold:
-                    return True
+        # Check in a cone/arc in front of the robot
+        for dist in range(1, check_distance + 1):
+            # Width of check area increases slightly with distance
+            width_at_dist = max(1, robot_width_cells - dist // 3)
+
+            # Check cells in an arc at this distance
+            for offset in range(-width_at_dist, width_at_dist + 1):
+                # Calculate angle for this offset
+                # Offset perpendicular to robot direction
+                check_angle = self.robot_angle + (offset * 0.2 / dist)  # Narrower cone
+
+                check_x = int(rx + dist * math.cos(check_angle))
+                check_y = int(ry + dist * math.sin(check_angle))
+
+                if 0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size:
+                    if self.occupancy_prob[check_y, check_x] > self.occupied_threshold:
+                        return True
 
         return False
+
+    def calculate_obstacle_density(self):
+        """Calculate obstacle density around robot for adaptive speed"""
+        if not self.robot_pos:
+            return 0.0
+
+        rx, ry = self.robot_pos
+        obstacle_count = 0
+        check_radius = 5
+        total_cells = 0
+
+        for dx in range(-check_radius, check_radius + 1):
+            for dy in range(-check_radius, check_radius + 1):
+                nx, ny = rx + dx, ry + dy
+                if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                    total_cells += 1
+                    if self.occupancy_prob[ny, nx] > self.occupied_threshold:
+                        obstacle_count += 1
+
+        return obstacle_count / total_cells if total_cells > 0 else 0.0
+
+    def get_adaptive_speed(self):
+        """Calculate adaptive speed based on environment"""
+        if not self.adaptive_speed:
+            return self.linear_speed
+
+        # Get obstacle density
+        density = self.calculate_obstacle_density()
+
+        # Calculate speed (inverse relationship with density)
+        # High density = slow speed, low density = fast speed
+        speed_range = self.max_linear_speed - self.min_linear_speed
+        adaptive_speed = self.max_linear_speed - (density * speed_range)
+
+        return np.clip(adaptive_speed, self.min_linear_speed, self.max_linear_speed)
 
     def is_stuck(self):
         """Check if robot is stuck"""
@@ -465,7 +593,7 @@ class AutonomousExplorerNode(Node):
         return self.stuck_counter > 10  # Stuck for 5 seconds
 
     def control_loop(self):
-        """Enhanced control logic with collision avoidance"""
+        """Enhanced control logic with collision avoidance (safe forward motion only)"""
         if not self.robot_pos:
             self.stop_robot()
             return
@@ -478,12 +606,6 @@ class AutonomousExplorerNode(Node):
 
         # Update last position
         self.last_robot_pos = self.robot_pos
-
-        # Check for immediate collision
-        if self.check_collision_ahead() and self.state != "COLLISION_AVOIDANCE" and self.state != "RECOVERY":
-            self.get_logger().warn("Obstacle detected ahead! Avoiding collision...")
-            self.state = "COLLISION_AVOIDANCE"
-            self.collision_counter = 15  # About 90 degrees turn
 
         # State machine
         if self.state == "COLLISION_AVOIDANCE":
@@ -500,7 +622,7 @@ class AutonomousExplorerNode(Node):
             # Back up and turn
             twist = Twist()
             twist.linear.x = -self.linear_speed * 0.8
-            twist.angular.z = self.angular_speed * 1.5
+            twist.angular.z = -self.angular_speed * 1.5
             self.cmd_pub.publish(twist)
             self.state = "EXPLORING"
 
@@ -518,7 +640,7 @@ class AutonomousExplorerNode(Node):
                 goal_msg.z = 0.0
                 self.goal_pub.publish(goal_msg)
             else:
-                # No frontiers found, just turn to look around
+                # No frontiers found, just turn to explore
                 self.turn_to_explore()
 
         elif self.state == "MOVING_TO_TARGET":
@@ -533,8 +655,15 @@ class AutonomousExplorerNode(Node):
 
             if distance < 2.0:  # Close enough
                 self.get_logger().info("Target reached!")
+                self.visited_targets.add((tx, ty))
                 self.state = "EXPLORING"
                 self.target = None
+                self.stop_robot()
+                return
+
+            # Check collision ahead *only before moving forward*
+            if self.check_collision_ahead():
+                self.get_logger().warn("Obstacle ahead! Halting forward motion.")
                 self.stop_robot()
                 return
 
@@ -556,6 +685,9 @@ class AutonomousExplorerNode(Node):
         # Normalize angle difference
         angle_diff = self.normalize_angle(angle_diff)
 
+        # Get adaptive speed
+        current_speed = self.get_adaptive_speed()
+
         # If we need to turn significantly
         if abs(angle_diff) > 0.3:  # ~17 degrees
             twist = Twist()
@@ -565,15 +697,17 @@ class AutonomousExplorerNode(Node):
 
         # Move forward with angular correction
         twist = Twist()
-        twist.linear.x = self.linear_speed
+        twist.linear.x = current_speed
         twist.angular.z = angle_diff * 0.5
         self.cmd_pub.publish(twist)
 
     def turn_to_explore(self):
         """Turn to explore when no frontiers are found"""
+        # Systematic exploration pattern
         twist = Twist()
-        twist.angular.z = self.angular_speed * 0.5  # Slow turn
-        twist.linear.x = self.linear_speed * 0.5
+        turn_direction = 1 if int(self.get_clock().now().nanoseconds / 1e9) % 10 < 5 else -1
+        twist.angular.z = self.angular_speed * 0.5 * turn_direction
+        twist.linear.x = self.linear_speed * 0.3  # Slow forward movement while turning
         self.cmd_pub.publish(twist)
 
     def stop_robot(self):

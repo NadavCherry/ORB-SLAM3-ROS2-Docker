@@ -20,7 +20,7 @@ class EnhancedMapBuilderNode(Node):
         super().__init__('enhanced_map_builder_node')
 
         # Grid parameters for initial point cloud processing
-        self.resolution = 0.1  # meters per pixel
+        self.resolution = 0.5  # meters per pixel
         self.map_size = 50.0  # meters
         self.grid_size = int(self.map_size / self.resolution)
 
@@ -53,7 +53,7 @@ class EnhancedMapBuilderNode(Node):
 
         # Visualization
         self.save_visualizations = True
-        self.viz_path = '/tmp/planner_maps'
+        self.viz_path = '/tmp/planner_maps/maps'
         os.makedirs(self.viz_path, exist_ok=True)
 
         self.get_logger().info("Enhanced Map Builder started")
