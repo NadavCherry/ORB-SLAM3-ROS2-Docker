@@ -186,7 +186,7 @@ class AutonomousExplorerNode(Node):
         if self.state == "COLLISION_AVOIDANCE":
             if self.collision_counter > 0:
                 twist = Twist()
-                twist.angular.z = -self.angular_speed
+                twist.angular.z = self.angular_speed
                 self.cmd_pub.publish(twist)
                 self.collision_counter -= 1
             else:

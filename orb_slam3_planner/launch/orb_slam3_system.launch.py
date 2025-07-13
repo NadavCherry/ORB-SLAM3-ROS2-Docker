@@ -6,11 +6,10 @@ from launch import LaunchDescription
 
 def generate_launch_description():
 
-    num_robots = 3
 
     launch_nodes = []
 
-    for i in range(num_robots):
+    for i in range(0, 3):
         robot_ns = f'robot_{i}'
         # Landmark Publisher
         launch_nodes.append(
@@ -54,16 +53,3 @@ def generate_launch_description():
             )
         )
     return LaunchDescription(launch_nodes)
-
-# Node(
-#     package='orb_slam3_planner',
-#     executable='map_builder_node',
-#     name='map_builder_node',
-#     output='screen'
-# ),
-# Node(
-#     package='orb_slam3_planner',
-#     executable='enhanced_map_builder_node',
-#     name='enhanced_map_builder_node',
-#     output='screen'
-# ),
