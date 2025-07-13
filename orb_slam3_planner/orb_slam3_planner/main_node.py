@@ -58,7 +58,7 @@ class AutonomousExplorerNode(Node):
         # ======================
         self.camera_fov = math.radians(60)
         self.camera_range = 10.0
-        self.min_points_for_obstacle = 20
+        self.min_points_for_obstacle = 15
 
         # ======================
         # Motion Parameters
