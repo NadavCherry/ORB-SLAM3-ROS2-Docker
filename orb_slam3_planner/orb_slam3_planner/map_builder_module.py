@@ -38,7 +38,11 @@ class MapBuilder:
         robot_world_x = self.node.current_pose.position.x
         robot_world_y = self.node.current_pose.position.y
 
-        points = list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True))
+        try:
+            points = list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True))
+        except (AssertionError, Exception) as e:
+            # ORB-SLAM3 might send malformed clouds when tracking is lost
+            return
         cell_points = {}
 
         for x, y, z in points:

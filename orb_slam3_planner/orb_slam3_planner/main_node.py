@@ -7,11 +7,12 @@ from geometry_msgs.msg import PoseStamped, Twist, Point
 from nav_msgs.msg import OccupancyGrid
 import math
 import numpy as np
+import time
 
+import sensor_msgs_py.point_cloud2 as pc2
 from orb_slam3_planner.map_builder_module import MapBuilder
 from orb_slam3_planner.planner_module import FrontierPlanner
 from orb_slam3_planner.drone_controller_module import DroneController
-
 
 
 class AutonomousExplorerNode(Node):
@@ -27,7 +28,6 @@ class AutonomousExplorerNode(Node):
 
     def __init__(self):
         super().__init__('autonomous_explorer_node')
-
 
         # ======================
         # Namespace & Parameters
@@ -65,7 +65,7 @@ class AutonomousExplorerNode(Node):
         # ======================
         self.linear_speed = 0.6
         self.angular_speed = 0.5
-        self.safe_distance = 4
+        self.safe_distance = 5
 
         self.adaptive_speed = True
         self.min_linear_speed = 0.3
@@ -92,6 +92,19 @@ class AutonomousExplorerNode(Node):
         self.last_robot_pos = None
 
         # ======================
+        # Goal Timeout
+        # ======================
+        self.target_start_time = None
+        self.target_timeout = 30.0  # seconds to reach a goal
+
+        # ======================
+        # SLAM Tracking Defense
+        # ======================
+        self.last_pose_time = None
+        self.pose_timeout = 2.0  # seconds without pose = tracking lost
+        self.recovery_spin_time = 8.0  # seconds to spin when lost
+
+        # ======================
         # ROS2 Setup
         # ======================
         ns = f'/{self.robot_namespace}' if self.robot_namespace else ''
@@ -110,9 +123,9 @@ class AutonomousExplorerNode(Node):
         self.create_subscription(PoseStamped, f'{ns}/robot_pose_slam', self.pose_callback, 10)
 
         self.create_timer(0.5, self.control_loop)
+        self.create_timer(1.0, self.check_tracking_lost)  # Check for tracking loss
 
         self.get_logger().info(f"Autonomous Explorer Node started for namespace: {self.robot_namespace}")
-
 
     def update_cell_probability(self, x, y, prob_change):
         """
@@ -143,6 +156,13 @@ class AutonomousExplorerNode(Node):
         Args:
             msg (geometry_msgs.msg.PoseStamped): The robot's current estimated pose.
         """
+        self.last_pose_time = time.time()  # Track when we last got a pose
+
+        # If we were in SLAM_LOST, recover
+        if self.state == "SLAM_LOST":
+            self.get_logger().info("SLAM tracking recovered!")
+            self.state = "EXPLORING"
+
         self.current_pose = msg.pose
 
         # Convert to grid coordinates
@@ -167,10 +187,41 @@ class AutonomousExplorerNode(Node):
             robot_msg.z = float(self.robot_angle)
             self.robot_pos_pub.publish(robot_msg)
 
+    def check_tracking_lost(self):
+        """Check if SLAM tracking is lost"""
+        if self.last_pose_time is None:
+            return
+
+        time_since_pose = time.time() - self.last_pose_time
+
+        if time_since_pose > self.pose_timeout and self.state != "SLAM_LOST":
+            self.get_logger().error(f"SLAM tracking lost! No pose for {time_since_pose:.1f}s")
+            self.state = "SLAM_LOST"
+            self.slam_lost_start_time = time.time()
+            # Immediately stop
+            twist = Twist()
+            self.cmd_pub.publish(twist)
+
     def control_loop(self):
         """
         Main control loop: executes exploration state machine and sends movement commands.
         """
+
+        # Handle SLAM lost state
+        if self.state == "SLAM_LOST":
+            time_lost = time.time() - self.slam_lost_start_time
+
+            if time_lost < self.recovery_spin_time:
+                # Spin slowly to find features
+                twist = Twist()
+                twist.angular.z = self.angular_speed * 0.4
+                self.cmd_pub.publish(twist)
+                self.get_logger().info(f"SLAM lost: spinning to recover ({time_lost:.1f}s)")
+            else:
+                # Stop and wait for manual intervention
+                self.controller.stop_robot()
+                self.get_logger().error("SLAM recovery failed. Manual restart required.")
+            return
 
         if not self.robot_pos:
             self.controller.stop_robot()
@@ -204,6 +255,7 @@ class AutonomousExplorerNode(Node):
 
             if self.target:
                 self.state = "MOVING_TO_TARGET"
+                self.target_start_time = time.time()  # Start timer
                 self.get_logger().info(f"New target: {self.target}")
                 goal_msg = Point()
                 goal_msg.x = float(self.target[0])
@@ -217,6 +269,15 @@ class AutonomousExplorerNode(Node):
                 self.state = "EXPLORING"
                 return
 
+            # Check timeout
+            if self.target_start_time and (time.time() - self.target_start_time) > self.target_timeout:
+                self.get_logger().warn(f"Goal timeout! Abandoning target after {self.target_timeout}s")
+                self.visited_targets.add((self.target[0], self.target[1]))  # Mark as visited to avoid retrying
+                self.target = None
+                self.target_start_time = None
+                self.state = "EXPLORING"
+                return
+
             rx, ry = self.robot_pos
             tx, ty = self.target
             distance = math.sqrt((tx - rx) ** 2 + (ty - ry) ** 2)
@@ -226,6 +287,7 @@ class AutonomousExplorerNode(Node):
                 self.visited_targets.add((tx, ty))
                 self.state = "EXPLORING"
                 self.target = None
+                self.target_start_time = None  # Reset timer
                 self.controller.stop_robot()
                 return
 
